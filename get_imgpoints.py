@@ -55,7 +55,7 @@ def main():
             img = gip.showPoints(frame,1)
             cv2.imshow('camera', img)      #カメラの画像の出力
         if flag == 0:
-            cv2.setMouseCallback('camera', gip.onMouse)        # 1カメの画像に対するクリックイベント
+            cv2.setMouseCallback('camera', gip.onMouse)        # カメラ画像に対するクリックイベント
             flag = 1
         key =cv2.waitKey(1)
         if key == ord('z'):
