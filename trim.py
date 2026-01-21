@@ -22,7 +22,20 @@ class VideoTrimmerApp:
             command=self.show_frame,
             state="disabled"
         )
-        self.slider.pack(fill="x", padx=10, pady=10)
+        self.slider.pack(fill="x", padx=10, pady=5)
+
+        # === Frame index input ===
+        frame_input_frame = tk.Frame(self.root)
+        frame_input_frame.pack(pady=5)
+
+        self.frame_var = tk.StringVar()
+        tk.Label(frame_input_frame, text="frame").pack(side="left")
+        tk.Entry(frame_input_frame, textvariable=self.frame_var, width=8).pack(side="left", padx=5)
+        tk.Button(
+            frame_input_frame,
+            text="フレーム指定反映",
+            command=self.apply_frame_input
+        ).pack(side="left", padx=5)
 
         # === Buttons ===
         button_frame = tk.Frame(self.root)
@@ -55,10 +68,10 @@ class VideoTrimmerApp:
         # === State ===
         self.cap = None
         self.frame = None
+        self.scale = 1.0
         self.rect_start = None
         self.rect_id = None
-        self.trimming_rect = None          # canvas coords
-        self.trim_pixels = None            # original pixel coords
+        self.trim_pixels = None  # (x1,y1,x2,y2) in original pixels
 
         # === Bindings ===
         self.canvas.bind("<ButtonPress-1>", self.on_left_click_down)
@@ -93,17 +106,20 @@ class VideoTrimmerApp:
     def show_frame(self, idx):
         if not self.cap:
             return
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(float(idx)))
+
+        idx = int(float(idx))
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ret, frame = self.cap.read()
         if not ret:
             return
+
         self.frame = frame
+        self.frame_var.set(str(idx))  # sync entry
 
         h, w, _ = frame.shape
-        scale = min(800 / w, 600 / h, 1)
-        self.scale = scale
+        self.scale = min(800 / w, 600 / h, 1)
 
-        disp_w, disp_h = int(w * scale), int(h * scale)
+        disp_w, disp_h = int(w * self.scale), int(h * self.scale)
         self.canvas.config(width=disp_w, height=disp_h)
 
         img = cv2.resize(frame, (disp_w, disp_h))
@@ -114,6 +130,18 @@ class VideoTrimmerApp:
         if self.trim_pixels:
             self.draw_rect_from_pixels()
 
+    def apply_frame_input(self):
+        if not self.cap:
+            return
+        try:
+            idx = int(self.frame_var.get())
+        except ValueError:
+            return
+
+        idx = max(0, min(self.frame_count - 1, idx))
+        self.slider.set(idx)
+        self.show_frame(idx)
+
     # ---------------- Interaction ----------------
     def on_left_click_down(self, e):
         self.rect_start = (e.x, e.y)
@@ -121,7 +149,8 @@ class VideoTrimmerApp:
     def on_mouse_drag(self, e):
         if not self.rect_start:
             return
-        self.canvas.delete(self.rect_id)
+        if self.rect_id:
+            self.canvas.delete(self.rect_id)
         self.rect_id = self.canvas.create_rectangle(
             self.rect_start[0], self.rect_start[1], e.x, e.y, outline="red"
         )
@@ -133,7 +162,6 @@ class VideoTrimmerApp:
 
     # ---------------- Sync logic ----------------
     def set_trim_from_canvas(self, cx1, cy1, cx2, cy2):
-        h, w, _ = self.frame.shape
         px1 = int(cx1 / self.scale)
         py1 = int(cy1 / self.scale)
         px2 = int(cx2 / self.scale)
@@ -158,7 +186,8 @@ class VideoTrimmerApp:
         self.update_label()
 
     def draw_rect_from_pixels(self):
-        self.canvas.delete(self.rect_id)
+        if self.rect_id:
+            self.canvas.delete(self.rect_id)
         cx1 = int(self.trim_pixels[0] * self.scale)
         cy1 = int(self.trim_pixels[1] * self.scale)
         cx2 = int(self.trim_pixels[2] * self.scale)
@@ -183,46 +212,43 @@ class VideoTrimmerApp:
         if self.frame is None:
             return
 
+        frame_idx = int(self.slider.get())
+
         if self.trim_pixels:
             x1, y1, x2, y2 = self.trim_pixels
             cropped = self.frame[y1:y2, x1:x2]
+            suffix = f"_f{frame_idx}_x{x1}_y{y1}_x{x2}_y{y2}"
         else:
             cropped = self.frame
+            suffix = f"_f{frame_idx}"
 
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        suffix = ""
-        if self.trim_pixels:
-            suffix = f"_x{x1}_y{y1}_x{x2}_y{y2}"
-
-        path = os.path.join(self.output_dir, f"trimmed_frame_{ts}{suffix}.jpg")
+        path = os.path.join(self.output_dir, f"trimmed{suffix}.jpg")
         cv2.imwrite(path, cropped)
         print(f"保存: {path}")
 
+    # ---------------- Cancel ----------------
     def cancel_selection(self):
-        # キャンバス上の矩形を削除
         if self.rect_id:
             self.canvas.delete(self.rect_id)
             self.rect_id = None
 
-        # 内部状態をリセット
         self.trim_pixels = None
         self.rect_start = None
 
-        # ピクセル指定Entryをリセット
         self.x1_var.set("")
         self.y1_var.set("")
         self.x2_var.set("")
         self.y2_var.set("")
 
-        # 表示ラベルをリセット
         self.original_size_label.config(text="トリミング範囲: 未選択")
 
-
+    # ---------------- Move ----------------
     def move_frame(self, step):
         idx = int(self.slider.get())
         idx = max(0, min(self.frame_count - 1, idx + step))
         self.slider.set(idx)
         self.show_frame(idx)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
