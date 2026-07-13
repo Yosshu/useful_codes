@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# スクリプトの出力先
+uniform_output/
+output/

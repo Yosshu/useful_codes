@@ -7,8 +7,9 @@
 - Python 3.8+
 - opencv-python
 - numpy
-- Pillow（`trim.py` で使用）
+- Pillow（`trim.py` / `uniform_size.py` / `img_convert.py` で使用）
 - Tkinter（`trim.py` で使用。標準では同梱、Linux では別途 `python3-tk` の導入が必要な場合あり）
+- NVIDIA ドライバ・`nvidia-smi`（`gpu_watch.py` で使用）
 
 ```bash
 pip install opencv-python numpy pillow
@@ -94,3 +95,92 @@ python trim.py
 | `T` | 現在フレームをトリミング & 保存 |
 | `←` / `→` | 1 フレーム戻る / 進む |
 | `Esc` | 選択範囲をキャンセル |
+
+### uniform_size.py
+
+複数画像のサイズ（アスペクト比）を一括で揃えるツール。論文の subfigure などで、画像の大きさを合わせたいときに使います。揃えた画像は出力ディレクトリ（既定: `uniform_output/`）に保存されます。入力はファイル・ディレクトリ・ワイルドカードで指定できます。
+
+**実行方法**
+
+```bash
+# フォルダ内の画像を、最大サイズに合わせて余白パディングで統一
+python uniform_size.py figs/
+
+# 幅640×高さ480に、中央クロップで統一
+python uniform_size.py a.png b.png c.png --size 640x480 --mode crop
+
+# 基準画像に合わせ、余白は黒で
+python uniform_size.py figs/ --match ref.png --bg black
+```
+
+**主なオプション**
+
+| オプション | 説明 |
+| --- | --- |
+| `-o, --output` | 出力ディレクトリ（既定: `uniform_output`） |
+| `--size 幅x高さ` | 目標サイズを直接指定 |
+| `--match FILE` | 指定ファイルのサイズに合わせる（省略時は入力中の最大サイズ） |
+| `--mode` | `pad`=余白で揃える（既定） / `crop`=中央クロップ / `stretch`=引き伸ばし |
+| `--bg` | 余白の色。色名 / `#RRGGBB` / `R,G,B`（既定: white） |
+| `--format` | 出力形式を変換（例: `png`, `jpg`） |
+
+### img_convert.py
+
+画像フォーマット・DPI をまとめて変換するツール。論文投稿で png → pdf / eps などに変換したいときに使います。入力はファイル・ディレクトリ・ワイルドカードで指定できます。
+
+> 注: pdf / eps はラスタ画像として書き出します（ベクタ化はしません）。
+
+**実行方法**
+
+```bash
+# フォルダ内の画像をすべて 300dpi の PDF に
+python img_convert.py figs/ -f pdf --dpi 300
+
+# png を高品質 jpg に（透過は白で埋める）
+python img_convert.py a.png b.png -f jpg --quality 95
+
+# 出力先を指定して eps に
+python img_convert.py plot.png -f eps -o submission/
+```
+
+**主なオプション**
+
+| オプション | 説明 |
+| --- | --- |
+| `-f, --to` | 変換先の形式（`png` / `jpg` / `pdf` / `eps` / `tiff` / `bmp` / `webp` / `gif`）※必須 |
+| `-o, --output` | 出力ディレクトリ（省略時は入力と同じ場所） |
+| `--dpi` | DPI を設定（pdf / tiff / 印刷用に有効） |
+| `--quality` | jpg / webp の品質 1-100（既定: 95） |
+| `--bg` | 透過を埋める背景色（既定: white） |
+
+### gpu_watch.py
+
+`nvidia-smi` をもとに GPU の空き状況を監視するツール。共用サーバーなどで空いている GPU を待ちたいときに使います。標準では見やすい表をリアルタイム更新し、GPU が空くとベルで通知します。「空き」は、使用メモリが `--mem-threshold` 以下 かつ 使用率が `--util-threshold` 以下、で判定します。
+
+**実行方法**
+
+```bash
+# 2秒ごとに監視（Ctrl-C で終了）
+python gpu_watch.py
+
+# 空き GPU が出るまで待って終了（スクリプトで連結できる）
+python gpu_watch.py --wait && python train.py
+
+# 空いた GPU を掴んで学習を開始（CUDA_VISIBLE_DEVICES を自動設定）
+python gpu_watch.py --run "python train.py"
+
+# 現在の状態を1回だけ表示
+python gpu_watch.py --once
+```
+
+**主なオプション**
+
+| オプション | 説明 |
+| --- | --- |
+| `-n, --interval` | 更新間隔（秒、既定: 2.0） |
+| `--mem-threshold` | 空きとみなす使用メモリの上限 MiB（既定: 1000） |
+| `--util-threshold` | 空きとみなす GPU 使用率の上限 %（既定: 10） |
+| `--gpu` | 特定の GPU 番号だけを対象にする |
+| `--wait` | 空き GPU が出たら表示して終了 |
+| `--run CMD` | 空き GPU を掴んでコマンドを実行 |
+| `--once` | 現在の状態を1回だけ表示して終了 |
