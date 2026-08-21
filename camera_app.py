@@ -1,7 +1,6 @@
 """Tkinter で写真撮影と動画録画を行うカメラアプリ。"""
 
 import os
-import sys
 import time
 
 # macOS のシステム Tk が出す非推奨警告を抑制する。
@@ -34,30 +33,18 @@ class CameraApp:
         self.photo_dir.mkdir(parents=True, exist_ok=True)
         self.video_dir.mkdir(parents=True, exist_ok=True)
 
-        self.cap = self.open_camera(camera_index)
-        if not self.cap.isOpened():
-            self.cap.release()
-            message = "カメラが見つかりませんでした。"
-            if sys.platform == "darwin":
-                message += (
-                    "\n\nmacOS の「システム設定 > プライバシーとセキュリティ > "
-                    "カメラ」で、ターミナルまたは Python の利用を許可してください。"
-                )
-            messagebox.showerror("カメラエラー", message)
-            raise RuntimeError("カメラが見つかりませんでした。")
-
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self.cap.set(cv2.CAP_PROP_FPS, fps)
-
+        self.camera_index = camera_index
+        self.camera_width = width
+        self.camera_height = height
+        self.cap = None
         self.current_frame = None
         self.writer = None
         self.recording = False
         self.current_video_path = None
         self.running = True
         self.after_id = None
-        self.camera_started_at = time.monotonic()
         self.camera_help_shown = False
+        self.read_failures = 0
 
         self.root.title("Camera App")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -93,6 +80,13 @@ class CameraApp:
         )
         self.record_button.pack(side="left", padx=(0, 8))
 
+        self.search_button = ttk.Button(
+            controls,
+            text="カメラ再検索",
+            command=self.initialize_camera,
+        )
+        self.search_button.pack(side="left", padx=(0, 8))
+
         ttk.Button(controls, text="終了 (Esc)", command=self.close).pack(
             side="left"
         )
@@ -100,48 +94,120 @@ class CameraApp:
         self.status = tk.StringVar(value="カメラを準備しています...")
         ttk.Label(controls, textvariable=self.status).pack(side="right")
 
-        # ウィンドウを先に描画してからカメラのフレーム取得を始める。
-        self.after_id = self.root.after(100, self.update_frame)
+        # ウィンドウを先に描画してから、既定バックエンドでカメラを探す。
+        self.after_id = self.root.after(100, self.initialize_camera)
 
-    @staticmethod
-    def open_camera(camera_index):
-        """macOS では AVFoundation を明示し、それ以外は既定バックエンドを使う。"""
-        if sys.platform == "darwin":
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
-        else:
-            cap = cv2.VideoCapture(camera_index)
-        return cap
+    def initialize_camera(self):
+        """優先IDから順にカメラを探し、実際にフレームを取得できるものを使う。"""
+        if not self.running:
+            return
+
+        self.cancel_scheduled_update()
+        if self.recording:
+            self.stop_recording()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+        self.current_frame = None
+        self.read_failures = 0
+        self.search_button.configure(state="disabled")
+        self.photo_button.configure(state="disabled")
+        self.record_button.configure(state="disabled")
+        self.status.set("カメラを検索しています...")
+        self.preview_label.configure(
+            image="",
+            text="カメラID 0〜4を検索しています...",
+            wraplength=760,
+        )
+        self.preview_label.image = None
+        self.root.update_idletasks()
+
+        indices = [self.camera_index]
+        indices.extend(index for index in range(5) if index != self.camera_index)
+        first_frame = None
+
+        for index in indices:
+            cap = cv2.VideoCapture(index)
+            if not cap.isOpened():
+                cap.release()
+                continue
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
+            cap.set(cv2.CAP_PROP_FPS, self.fps)
+
+            # 起動直後は空フレームになることがあるので、少しだけ待って再試行する。
+            for _ in range(10):
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.size:
+                    first_frame = frame
+                    break
+                time.sleep(0.05)
+
+            if first_frame is not None:
+                self.cap = cap
+                self.camera_index = index
+                self.current_frame = first_frame
+                break
+            cap.release()
+
+        self.search_button.configure(state="normal")
+        if self.cap is None:
+            message = (
+                "使用できるカメラが見つかりませんでした。\n"
+                "カメラID 0〜4を確認しました。カメラ権限や、ほかのアプリによる "
+                "カメラ使用を確認してください。"
+            )
+            self.status.set("使用できるカメラが見つかりませんでした。")
+            self.preview_label.configure(image="", text=message, wraplength=760)
+            if not self.camera_help_shown:
+                self.camera_help_shown = True
+                self.root.after_idle(self.show_camera_help)
+            return
+
+        self.photo_button.configure(state="normal")
+        self.record_button.configure(state="normal")
+        self.status.set(f"カメラID {self.camera_index} に接続しました。")
+        self.after_id = self.root.after(0, self.update_frame)
+
+    def cancel_scheduled_update(self):
+        if self.after_id is None:
+            return
+        try:
+            self.root.after_cancel(self.after_id)
+        except tk.TclError:
+            pass
+        self.after_id = None
 
     @staticmethod
     def timestamp():
         return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
     def update_frame(self):
+        self.after_id = None
         if not self.running:
+            return
+
+        if self.cap is None or not self.cap.isOpened():
+            self.status.set("カメラが切断されました。再検索します...")
+            self.after_id = self.root.after(500, self.initialize_camera)
             return
 
         ret, frame = self.cap.read()
         if not ret:
             if self.recording:
                 self.stop_recording()
-            elapsed = time.monotonic() - self.camera_started_at
-            if elapsed >= 3:
-                message = (
-                    "カメラ映像を取得できません。macOS の「システム設定 > "
-                    "プライバシーとセキュリティ > カメラ」で、ターミナルまたは "
-                    "Python のカメラ利用を許可してください。"
-                )
-                self.status.set("カメラ権限または接続を確認してください。")
-                self.preview_label.configure(image="", text=message, wraplength=760)
-                self.preview_label.image = None
-                if not self.camera_help_shown:
-                    self.camera_help_shown = True
-                    self.root.after_idle(self.show_camera_help)
+            self.read_failures += 1
+            if self.read_failures >= 10:
+                self.status.set("映像を取得できません。カメラを再検索します...")
+                self.after_id = self.root.after(500, self.initialize_camera)
             else:
                 self.status.set("カメラ映像を取得できません。再試行中...")
-            self.after_id = self.root.after(100, self.update_frame)
+                self.after_id = self.root.after(100, self.update_frame)
             return
 
+        self.read_failures = 0
         self.current_frame = frame
         if self.recording and self.writer is not None:
             self.writer.write(frame)
@@ -176,10 +242,10 @@ class CameraApp:
             return
         messagebox.showwarning(
             "カメラ映像を取得できません",
+            "カメラID 0〜4を試しましたが、映像を取得できませんでした。\n\n"
             "macOS の「システム設定 > プライバシーとセキュリティ > カメラ」で、"
-            "ターミナル（または使用中の Python）を許可してください。\n\n"
-            "ほかのアプリがカメラを使用している場合は、そのアプリを終了してから "
-            "camera_app.py を再起動してください。",
+            "ターミナル（または使用中の Python）を許可してください。ほかのアプリが "
+            "カメラを使用している場合は、そのアプリも終了してください。",
         )
 
     @staticmethod
@@ -254,22 +320,17 @@ class CameraApp:
             return
 
         self.running = False
-        if self.after_id is not None:
-            self.root.after_cancel(self.after_id)
-            self.after_id = None
+        self.cancel_scheduled_update()
         if self.recording:
             self.stop_recording()
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
         self.root.destroy()
 
 
 def main():
     root = tk.Tk()
-    try:
-        CameraApp(root)
-    except RuntimeError:
-        root.destroy()
-        return
+    CameraApp(root)
     root.mainloop()
 
 
