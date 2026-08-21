@@ -1,16 +1,16 @@
 import cv2
-import os
+from datetime import datetime
+from pathlib import Path
 
 
 WINDOW_NAME = "Camera Preview"
 
 
-def build_output_path(output_path, recording_index):
-    """2回目以降の録画では、既存の録画を上書きしないファイル名を作る。"""
-    if recording_index == 1:
-        return output_path
-    stem, ext = os.path.splitext(output_path)
-    return f"{stem}_{recording_index}{ext}"
+def build_output_path(output_path):
+    """元のファイル名に録画開始日時を加えた保存先を作る。"""
+    path = Path(output_path)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    return str(path.with_name(f"{path.stem}_{timestamp}{path.suffix}"))
 
 
 def open_writer(output_path, fps, frame):
@@ -36,7 +36,6 @@ def record_video(output_path, fps=30, width=640, height=480):
 
     writer = None
     recording = False
-    recording_index = 0
     current_output_path = None
 
     cv2.namedWindow(WINDOW_NAME)
@@ -86,10 +85,7 @@ def record_video(output_path, fps=30, width=640, height=480):
                     recording = False
                     print("映像を保存しました:", current_output_path)
                 else:
-                    recording_index += 1
-                    current_output_path = build_output_path(
-                        output_path, recording_index
-                    )
+                    current_output_path = build_output_path(output_path)
                     try:
                         writer = open_writer(current_output_path, fps, frame)
                     except RuntimeError as error:
