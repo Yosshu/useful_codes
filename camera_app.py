@@ -42,10 +42,19 @@ class CameraApp:
         self.writer = None
         self.recording = False
         self.current_video_path = None
+        self.recording_crop_rect = None
         self.running = True
         self.after_id = None
         self.last_camera_message = None
         self.camera_help_shown = False
+
+        self.trim_mode = False
+        self.crop_rect = None
+        self.drag_start = None
+        self.drag_current = None
+        self.preview_scale = 1.0
+        self.preview_image_size = (0, 0)
+        self.preview_offset = (0, 0)
 
         # OpenCV の open/read は環境によって長時間ブロックするため、Tkスレッドから分離する。
         self.frame_lock = threading.Lock()
@@ -73,6 +82,9 @@ class CameraApp:
             font=("TkDefaultFont", 16),
         )
         self.preview_label.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        self.preview_label.bind("<ButtonPress-1>", self.start_crop_drag)
+        self.preview_label.bind("<B1-Motion>", self.update_crop_drag)
+        self.preview_label.bind("<ButtonRelease-1>", self.finish_crop_drag)
 
         controls = ttk.Frame(self.root, padding=(12, 6, 12, 12))
         controls.pack(fill="x")
@@ -92,6 +104,13 @@ class CameraApp:
             state="disabled",
         )
         self.record_button.pack(side="left", padx=(0, 8))
+
+        self.trim_button = ttk.Button(
+            controls,
+            text="トリミング: OFF",
+            command=self.toggle_trim_mode,
+        )
+        self.trim_button.pack(side="left", padx=(0, 8))
 
         self.search_button = ttk.Button(
             controls,
@@ -247,6 +266,9 @@ class CameraApp:
         if self.recording:
             self.stop_recording()
         self.current_frame = None
+        self.crop_rect = None
+        self.drag_start = None
+        self.drag_current = None
         self.camera_help_shown = False
         self.set_camera_state(
             "searching",
@@ -270,14 +292,23 @@ class CameraApp:
             self.last_camera_message = message
 
         camera_ready = state == "ready" and frame is not None
-        button_state = "normal" if camera_ready else "disabled"
-        self.photo_button.configure(state=button_state)
-        self.record_button.configure(state=button_state)
+        crop_ready = not self.trim_mode or self.crop_rect is not None
+        capture_ready = camera_ready and crop_ready
+        self.photo_button.configure(
+            state="normal" if capture_ready else "disabled"
+        )
+        self.record_button.configure(
+            state="normal" if self.recording or capture_ready else "disabled"
+        )
+        self.trim_button.configure(
+            state="normal" if camera_ready and not self.recording else "disabled"
+        )
 
         if camera_ready:
             self.current_frame = frame
             if self.recording and self.writer is not None:
-                self.writer.write(frame)
+                output_frame = self.crop_frame(frame, self.recording_crop_rect)
+                self.writer.write(output_frame)
             self.show_frame(frame)
         else:
             self.current_frame = None
@@ -295,6 +326,17 @@ class CameraApp:
 
     def show_frame(self, frame):
         preview = frame.copy()
+        selection = self.selection_rect_for_display(frame.shape)
+        if selection is not None:
+            x1, y1, x2, y2 = selection
+            cv2.rectangle(
+                preview,
+                (x1, y1),
+                (x2 - 1, y2 - 1),
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
         if self.recording:
             cv2.putText(
                 preview,
@@ -307,12 +349,134 @@ class CameraApp:
                 cv2.LINE_AA,
             )
 
+        original_height, original_width = preview.shape[:2]
         preview = self.resize_preview(preview, max_width=960)
+        display_height, display_width = preview.shape[:2]
+        self.preview_scale = display_width / original_width
+        self.preview_image_size = (display_width, display_height)
         preview_rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(preview_rgb)
         photo = ImageTk.PhotoImage(image=image)
         self.preview_label.configure(image=photo, text="")
         self.preview_label.image = photo
+        label_width = max(self.preview_label.winfo_width(), display_width)
+        label_height = max(self.preview_label.winfo_height(), display_height)
+        self.preview_offset = (
+            max(0, (label_width - display_width) // 2),
+            max(0, (label_height - display_height) // 2),
+        )
+
+    def toggle_trim_mode(self):
+        if self.recording:
+            return
+        self.trim_mode = not self.trim_mode
+        self.drag_start = None
+        self.drag_current = None
+        self.trim_button.configure(
+            text="トリミング: ON" if self.trim_mode else "トリミング: OFF"
+        )
+        if self.trim_mode:
+            if self.crop_rect is None:
+                self.status.set("プレビュー上をドラッグして範囲を選択してください。")
+            else:
+                x1, y1, x2, y2 = self.crop_rect
+                self.status.set(f"トリミング範囲: {x2 - x1}×{y2 - y1} px")
+        else:
+            self.status.set("トリミングを無効にしました。全体を保存します。")
+
+    def start_crop_drag(self, event):
+        if not self.trim_mode or self.recording or self.current_frame is None:
+            return
+        point = self.event_to_frame_point(event, clamp=False)
+        if point is None:
+            return
+        self.crop_rect = None
+        self.drag_start = point
+        self.drag_current = point
+        self.status.set("トリミング範囲を選択中...")
+
+    def update_crop_drag(self, event):
+        if self.drag_start is None:
+            return
+        point = self.event_to_frame_point(event, clamp=True)
+        if point is not None:
+            self.drag_current = point
+
+    def finish_crop_drag(self, event):
+        if self.drag_start is None:
+            return
+        point = self.event_to_frame_point(event, clamp=True)
+        if point is not None:
+            self.drag_current = point
+
+        rect = self.normalized_drag_rect()
+        self.drag_start = None
+        self.drag_current = None
+        if rect is None or rect[2] - rect[0] < 4 or rect[3] - rect[1] < 4:
+            self.crop_rect = None
+            self.status.set("範囲が小さすぎます。もう一度ドラッグしてください。")
+            return
+
+        self.crop_rect = rect
+        x1, y1, x2, y2 = rect
+        self.status.set(f"トリミング範囲: {x2 - x1}×{y2 - y1} px")
+
+    def event_to_frame_point(self, event, clamp):
+        if self.current_frame is None or self.preview_scale <= 0:
+            return None
+        display_width, display_height = self.preview_image_size
+        if display_width <= 0 or display_height <= 0:
+            return None
+
+        x = event.x - self.preview_offset[0]
+        y = event.y - self.preview_offset[1]
+        if not clamp and not (0 <= x < display_width and 0 <= y < display_height):
+            return None
+        x = min(max(x, 0), display_width - 1)
+        y = min(max(y, 0), display_height - 1)
+
+        frame_height, frame_width = self.current_frame.shape[:2]
+        frame_x = min(frame_width - 1, int(x / self.preview_scale))
+        frame_y = min(frame_height - 1, int(y / self.preview_scale))
+        return frame_x, frame_y
+
+    def normalized_drag_rect(self):
+        if self.drag_start is None or self.drag_current is None:
+            return None
+        x1 = min(self.drag_start[0], self.drag_current[0])
+        y1 = min(self.drag_start[1], self.drag_current[1])
+        x2 = max(self.drag_start[0], self.drag_current[0]) + 1
+        y2 = max(self.drag_start[1], self.drag_current[1]) + 1
+        return x1, y1, x2, y2
+
+    def selection_rect_for_display(self, frame_shape):
+        if not self.trim_mode:
+            return None
+        rect = self.normalized_drag_rect()
+        if rect is None:
+            rect = self.crop_rect
+        return self.clamp_rect(rect, frame_shape)
+
+    @staticmethod
+    def clamp_rect(rect, frame_shape):
+        if rect is None:
+            return None
+        height, width = frame_shape[:2]
+        x1 = min(max(rect[0], 0), width)
+        y1 = min(max(rect[1], 0), height)
+        x2 = min(max(rect[2], x1), width)
+        y2 = min(max(rect[3], y1), height)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2
+
+    @classmethod
+    def crop_frame(cls, frame, rect):
+        rect = cls.clamp_rect(rect, frame.shape)
+        if rect is None:
+            return frame
+        x1, y1, x2, y2 = rect
+        return frame[y1:y2, x1:x2].copy()
 
     def show_camera_help(self):
         if not self.running:
@@ -341,9 +505,14 @@ class CameraApp:
         if self.current_frame is None:
             self.status.set("撮影できるフレームがまだありません。")
             return
+        if self.trim_mode and self.crop_rect is None:
+            self.status.set("先にトリミング範囲をドラッグして選択してください。")
+            return
 
+        crop_rect = self.crop_rect if self.trim_mode else None
+        output_frame = self.crop_frame(self.current_frame, crop_rect)
         path = self.photo_dir / f"photo_{self.timestamp()}.png"
-        if cv2.imwrite(str(path), self.current_frame):
+        if cv2.imwrite(str(path), output_frame):
             self.status.set(f"写真を保存しました: {path}")
         else:
             self.status.set("写真の保存に失敗しました。")
@@ -358,8 +527,13 @@ class CameraApp:
         if self.current_frame is None:
             self.status.set("録画できるフレームがまだありません。")
             return
+        if self.trim_mode and self.crop_rect is None:
+            self.status.set("先にトリミング範囲をドラッグして選択してください。")
+            return
 
-        height, width = self.current_frame.shape[:2]
+        crop_rect = self.crop_rect if self.trim_mode else None
+        output_frame = self.crop_frame(self.current_frame, crop_rect)
+        height, width = output_frame.shape[:2]
         path = self.video_dir / f"video_{self.timestamp()}.mp4"
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(
@@ -379,8 +553,10 @@ class CameraApp:
 
         self.writer = writer
         self.current_video_path = path
+        self.recording_crop_rect = crop_rect
         self.recording = True
         self.record_button.configure(text="録画停止 (R)")
+        self.trim_button.configure(state="disabled")
         self.status.set(f"録画中: {path.name}")
 
     def stop_recording(self):
@@ -390,8 +566,11 @@ class CameraApp:
 
         saved_path = self.current_video_path
         self.current_video_path = None
+        self.recording_crop_rect = None
         self.recording = False
         self.record_button.configure(text="録画開始 (R)")
+        if self.current_frame is not None:
+            self.trim_button.configure(state="normal")
         if saved_path is not None:
             self.status.set(f"動画を保存しました: {saved_path}")
 
