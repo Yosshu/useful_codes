@@ -39,7 +39,7 @@ python get_imgpoints.py
 
 ### record_video.py
 
-指定した秒数だけカメラから動画を撮影して `.mp4` として保存します。
+カメラ映像をウィンドウで常時プレビューし、キー操作で録画を開始・停止して `.mp4` として保存します。
 
 **実行方法**
 
@@ -47,12 +47,20 @@ python get_imgpoints.py
 python record_video.py
 ```
 
+**操作**
+
+| キー | 動作 |
+| --- | --- |
+| `R` | 録画を開始。録画中にもう一度押すと停止して保存 |
+| `Esc` | 終了。録画中の場合は、その時点までを保存 |
+
+1回の起動中に複数回録画した場合、2本目以降は `recorded_video_2.mp4`, `recorded_video_3.mp4`, ... と保存されます。
+
 **設定項目（`__main__` 内の変数を編集）**
 
-- `output_file` — 出力ファイル名（既定: `recorded_video.mp4`）
-- `recording_duration` — 撮影秒数（既定: 10 秒）
-- `recording_fps` — フレームレート（既定: 10 fps）
-- `recording_width` / `recording_height` — 解像度（既定: 1280×720）
+- `output_file` — 1本目の出力ファイル名（既定: `recorded_video.mp4`）
+- `recording_fps` — 録画フレームレート（既定: 10 fps）
+- `recording_width` / `recording_height` — プレビュー・録画解像度（既定: 1280×720）
 
 ### takingpics.py
 
