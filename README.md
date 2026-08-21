@@ -54,11 +54,11 @@ python record_video.py
 | `R` | 録画を開始。録画中にもう一度押すと停止して保存 |
 | `Esc` | 終了。録画中の場合は、その時点までを保存 |
 
-1回の起動中に複数回録画した場合、2本目以降は `recorded_video_2.mp4`, `recorded_video_3.mp4`, ... と保存されます。
+録画ファイルは、録画開始日時を含む `recorded_video_YYYYMMDD_HHMMSS_mmm.mp4` 形式で保存されます。
 
 **設定項目（`__main__` 内の変数を編集）**
 
-- `output_file` — 1本目の出力ファイル名（既定: `recorded_video.mp4`）
+- `output_file` — 出力ファイル名のベース（既定: `recorded_video.mp4`。保存時に日時が自動挿入されます）
 - `recording_fps` — 録画フレームレート（既定: 10 fps）
 - `recording_width` / `recording_height` — プレビュー・録画解像度（既定: 1280×720）
 
@@ -97,7 +97,7 @@ python camera_app.py
 | 「録画開始・停止」 / `R` | MP4 動画の録画を開始・停止 |
 | 「終了」 / `Esc` | アプリを終了。録画中の場合は、その時点までを保存 |
 
-写真は `camera_output/photos/`、動画は `camera_output/videos/` に、撮影日時を含むファイル名で保存されます。
+写真は `camera_output/photos/photo_YYYYMMDD_HHMMSS_mmm.png`、動画は `camera_output/videos/video_YYYYMMDD_HHMMSS_mmm.mp4` 形式で保存されます。
 
 ### trim.py
 
