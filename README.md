@@ -7,8 +7,8 @@
 - Python 3.8+
 - opencv-python
 - numpy
-- Pillow（`trim.py` / `uniform_size.py` / `img_convert.py` で使用）
-- Tkinter（`trim.py` で使用。標準では同梱、Linux では別途 `python3-tk` の導入が必要な場合あり）
+- Pillow（`trim.py` / `camera_app.py` / `uniform_size.py` / `img_convert.py` で使用）
+- Tkinter（`trim.py` / `camera_app.py` で使用。標準では同梱、Linux では別途 `python3-tk` の導入が必要な場合あり）
 - NVIDIA ドライバ・`nvidia-smi`（`gpu_watch.py` で使用）
 
 ```bash
@@ -78,6 +78,26 @@ python takingpics.py
 | --- | --- |
 | `A` | 現在のフレームを保存 |
 | `Esc` | 終了 |
+
+### camera_app.py
+
+Tkinter のウィンドウでカメラ映像を確認しながら、写真撮影と動画録画の両方を行えるアプリです。
+
+**実行方法**
+
+```bash
+python camera_app.py
+```
+
+**操作**
+
+| ボタン / キー | 動作 |
+| --- | --- |
+| 「写真撮影」 / `P` | 現在の映像を PNG 画像として保存 |
+| 「録画開始・停止」 / `R` | MP4 動画の録画を開始・停止 |
+| 「終了」 / `Esc` | アプリを終了。録画中の場合は、その時点までを保存 |
+
+写真は `camera_output/photos/`、動画は `camera_output/videos/` に、撮影日時を含むファイル名で保存されます。
 
 ### trim.py
 
