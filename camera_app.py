@@ -1,5 +1,12 @@
 """Tkinter で写真撮影と動画録画を行うカメラアプリ。"""
 
+import os
+import sys
+import time
+
+# macOS のシステム Tk が出す非推奨警告を抑制する。
+os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
+
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -27,10 +34,16 @@ class CameraApp:
         self.photo_dir.mkdir(parents=True, exist_ok=True)
         self.video_dir.mkdir(parents=True, exist_ok=True)
 
-        self.cap = cv2.VideoCapture(camera_index)
+        self.cap = self.open_camera(camera_index)
         if not self.cap.isOpened():
             self.cap.release()
-            messagebox.showerror("カメラエラー", "カメラが見つかりませんでした。")
+            message = "カメラが見つかりませんでした。"
+            if sys.platform == "darwin":
+                message += (
+                    "\n\nmacOS の「システム設定 > プライバシーとセキュリティ > "
+                    "カメラ」で、ターミナルまたは Python の利用を許可してください。"
+                )
+            messagebox.showerror("カメラエラー", message)
             raise RuntimeError("カメラが見つかりませんでした。")
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -43,6 +56,8 @@ class CameraApp:
         self.current_video_path = None
         self.running = True
         self.after_id = None
+        self.camera_started_at = time.monotonic()
+        self.camera_help_shown = False
 
         self.root.title("Camera App")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -52,7 +67,13 @@ class CameraApp:
         self.root.bind("<Key-P>", self.take_photo)
         self.root.bind("<Escape>", self.close)
 
-        self.preview_label = tk.Label(self.root, bg="black")
+        self.preview_label = tk.Label(
+            self.root,
+            bg="black",
+            fg="white",
+            text="カメラを準備しています...",
+            font=("TkDefaultFont", 16),
+        )
         self.preview_label.pack(fill="both", expand=True, padx=12, pady=(12, 6))
 
         controls = ttk.Frame(self.root, padding=(12, 6, 12, 12))
@@ -76,10 +97,20 @@ class CameraApp:
             side="left"
         )
 
-        self.status = tk.StringVar(value="プレビュー中")
+        self.status = tk.StringVar(value="カメラを準備しています...")
         ttk.Label(controls, textvariable=self.status).pack(side="right")
 
-        self.update_frame()
+        # ウィンドウを先に描画してからカメラのフレーム取得を始める。
+        self.after_id = self.root.after(100, self.update_frame)
+
+    @staticmethod
+    def open_camera(camera_index):
+        """macOS では AVFoundation を明示し、それ以外は既定バックエンドを使う。"""
+        if sys.platform == "darwin":
+            cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
+        else:
+            cap = cv2.VideoCapture(camera_index)
+        return cap
 
     @staticmethod
     def timestamp():
@@ -93,7 +124,21 @@ class CameraApp:
         if not ret:
             if self.recording:
                 self.stop_recording()
-            self.status.set("カメラ映像を取得できませんでした。再試行中...")
+            elapsed = time.monotonic() - self.camera_started_at
+            if elapsed >= 3:
+                message = (
+                    "カメラ映像を取得できません。macOS の「システム設定 > "
+                    "プライバシーとセキュリティ > カメラ」で、ターミナルまたは "
+                    "Python のカメラ利用を許可してください。"
+                )
+                self.status.set("カメラ権限または接続を確認してください。")
+                self.preview_label.configure(image="", text=message, wraplength=760)
+                self.preview_label.image = None
+                if not self.camera_help_shown:
+                    self.camera_help_shown = True
+                    self.root.after_idle(self.show_camera_help)
+            else:
+                self.status.set("カメラ映像を取得できません。再試行中...")
             self.after_id = self.root.after(100, self.update_frame)
             return
 
@@ -118,11 +163,24 @@ class CameraApp:
         preview_rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(preview_rgb)
         photo = ImageTk.PhotoImage(image=image)
-        self.preview_label.configure(image=photo)
+        self.preview_label.configure(image=photo, text="")
         self.preview_label.image = photo
+        if not self.recording:
+            self.status.set("プレビュー中")
 
         interval_ms = max(1, round(1000 / self.fps))
         self.after_id = self.root.after(interval_ms, self.update_frame)
+
+    def show_camera_help(self):
+        if not self.running or self.current_frame is not None:
+            return
+        messagebox.showwarning(
+            "カメラ映像を取得できません",
+            "macOS の「システム設定 > プライバシーとセキュリティ > カメラ」で、"
+            "ターミナル（または使用中の Python）を許可してください。\n\n"
+            "ほかのアプリがカメラを使用している場合は、そのアプリを終了してから "
+            "camera_app.py を再起動してください。",
+        )
 
     @staticmethod
     def resize_preview(frame, max_width):
