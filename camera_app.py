@@ -1,6 +1,7 @@
 """Tkinter で写真撮影と動画録画を行うカメラアプリ。"""
 
 import os
+import threading
 import time
 
 # macOS のシステム Tk が出す非推奨警告を抑制する。
@@ -27,24 +28,34 @@ class CameraApp:
     ):
         self.root = root
         self.fps = fps
+        self.camera_index = camera_index
+        self.camera_width = width
+        self.camera_height = height
+
         self.output_dir = Path(output_dir)
         self.photo_dir = self.output_dir / "photos"
         self.video_dir = self.output_dir / "videos"
         self.photo_dir.mkdir(parents=True, exist_ok=True)
         self.video_dir.mkdir(parents=True, exist_ok=True)
 
-        self.camera_index = camera_index
-        self.camera_width = width
-        self.camera_height = height
-        self.cap = None
         self.current_frame = None
         self.writer = None
         self.recording = False
         self.current_video_path = None
         self.running = True
         self.after_id = None
+        self.last_camera_message = None
         self.camera_help_shown = False
-        self.read_failures = 0
+
+        # OpenCV の open/read は環境によって長時間ブロックするため、Tkスレッドから分離する。
+        self.frame_lock = threading.Lock()
+        self.latest_frame = None
+        self.camera_state = "searching"
+        self.camera_message = "カメラを検索しています..."
+        self.active_camera_index = None
+        self.camera_stop_event = threading.Event()
+        self.camera_rescan_event = threading.Event()
+        self.camera_thread = None
 
         self.root.title("Camera App")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -58,7 +69,7 @@ class CameraApp:
             self.root,
             bg="black",
             fg="white",
-            text="カメラを準備しています...",
+            text="カメラを検索しています...",
             font=("TkDefaultFont", 16),
         )
         self.preview_label.pack(fill="both", expand=True, padx=12, pady=(12, 6))
@@ -70,6 +81,7 @@ class CameraApp:
             controls,
             text="写真撮影 (P)",
             command=self.take_photo,
+            state="disabled",
         )
         self.photo_button.pack(side="left", padx=(0, 8))
 
@@ -77,13 +89,14 @@ class CameraApp:
             controls,
             text="録画開始 (R)",
             command=self.toggle_recording,
+            state="disabled",
         )
         self.record_button.pack(side="left", padx=(0, 8))
 
         self.search_button = ttk.Button(
             controls,
             text="カメラ再検索",
-            command=self.initialize_camera,
+            command=self.request_camera_search,
         )
         self.search_button.pack(side="left", padx=(0, 8))
 
@@ -91,43 +104,117 @@ class CameraApp:
             side="left"
         )
 
-        self.status = tk.StringVar(value="カメラを準備しています...")
+        self.status = tk.StringVar(value="カメラを検索しています...")
         ttk.Label(controls, textvariable=self.status).pack(side="right")
 
-        # ウィンドウを先に描画してから、既定バックエンドでカメラを探す。
-        self.after_id = self.root.after(100, self.initialize_camera)
-
-    def initialize_camera(self):
-        """優先IDから順にカメラを探し、実際にフレームを取得できるものを使う。"""
-        if not self.running:
-            return
-
-        self.cancel_scheduled_update()
-        if self.recording:
-            self.stop_recording()
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-
-        self.current_frame = None
-        self.read_failures = 0
-        self.search_button.configure(state="disabled")
-        self.photo_button.configure(state="disabled")
-        self.record_button.configure(state="disabled")
-        self.status.set("カメラを検索しています...")
-        self.preview_label.configure(
-            image="",
-            text="カメラID 0〜4を検索しています...",
-            wraplength=760,
+        # GUIを先に完成させ、カメラ処理はバックグラウンドで開始する。
+        self.after_id = self.root.after(33, self.refresh_ui)
+        self.camera_thread = threading.Thread(
+            target=self.camera_worker,
+            name="camera-capture",
+            daemon=True,
         )
-        self.preview_label.image = None
-        self.root.update_idletasks()
+        self.camera_thread.start()
 
+    @staticmethod
+    def timestamp():
+        return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+    def set_camera_state(
+        self,
+        state,
+        message,
+        *,
+        camera_index=None,
+        frame=None,
+        clear_frame=False,
+    ):
+        with self.frame_lock:
+            self.camera_state = state
+            self.camera_message = message
+            self.active_camera_index = camera_index
+            if clear_frame:
+                self.latest_frame = None
+            if frame is not None:
+                self.latest_frame = frame
+
+    def camera_worker(self):
+        """カメラを探索し、最新フレームを共有するバックグラウンド処理。"""
+        while not self.camera_stop_event.is_set():
+            self.camera_rescan_event.clear()
+            self.set_camera_state(
+                "searching",
+                "カメラID 0〜4を検索しています...",
+                clear_frame=True,
+            )
+
+            result = self.find_working_camera()
+            if self.camera_stop_event.is_set():
+                return
+            if self.camera_rescan_event.is_set():
+                continue
+
+            if result is None:
+                self.set_camera_state(
+                    "error",
+                    "使用できるカメラが見つかりませんでした。",
+                    clear_frame=True,
+                )
+                while not self.camera_stop_event.is_set():
+                    if self.camera_rescan_event.wait(0.2):
+                        break
+                continue
+
+            cap, index, first_frame = result
+            self.set_camera_state(
+                "ready",
+                f"カメラID {index} に接続しました。",
+                camera_index=index,
+                frame=first_frame,
+            )
+
+            failures = 0
+            while (
+                not self.camera_stop_event.is_set()
+                and not self.camera_rescan_event.is_set()
+            ):
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.size:
+                    failures = 0
+                    with self.frame_lock:
+                        self.latest_frame = frame
+                    continue
+
+                failures += 1
+                if failures >= 10:
+                    self.set_camera_state(
+                        "searching",
+                        "映像を取得できません。カメラを再検索します...",
+                        clear_frame=True,
+                    )
+                    break
+                time.sleep(0.05)
+
+            cap.release()
+            if (
+                failures >= 10
+                and not self.camera_stop_event.is_set()
+                and not self.camera_rescan_event.is_set()
+            ):
+                time.sleep(0.5)
+
+    def find_working_camera(self):
+        """既定バックエンドでID 0〜4を試し、映像を取得できるカメラを返す。"""
         indices = [self.camera_index]
         indices.extend(index for index in range(5) if index != self.camera_index)
-        first_frame = None
 
         for index in indices:
+            if (
+                self.camera_stop_event.is_set()
+                or self.camera_rescan_event.is_set()
+            ):
+                return None
+
             cap = cv2.VideoCapture(index)
             if not cap.isOpened():
                 cap.release()
@@ -137,81 +224,76 @@ class CameraApp:
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
             cap.set(cv2.CAP_PROP_FPS, self.fps)
 
-            # 起動直後は空フレームになることがあるので、少しだけ待って再試行する。
             for _ in range(10):
+                if (
+                    self.camera_stop_event.is_set()
+                    or self.camera_rescan_event.is_set()
+                ):
+                    cap.release()
+                    return None
                 ret, frame = cap.read()
                 if ret and frame is not None and frame.size:
-                    first_frame = frame
-                    break
+                    self.camera_index = index
+                    return cap, index, frame
                 time.sleep(0.05)
 
-            if first_frame is not None:
-                self.cap = cap
-                self.camera_index = index
-                self.current_frame = first_frame
-                break
             cap.release()
 
-        self.search_button.configure(state="normal")
-        if self.cap is None:
-            message = (
-                "使用できるカメラが見つかりませんでした。\n"
-                "カメラID 0〜4を確認しました。カメラ権限や、ほかのアプリによる "
-                "カメラ使用を確認してください。"
-            )
-            self.status.set("使用できるカメラが見つかりませんでした。")
-            self.preview_label.configure(image="", text=message, wraplength=760)
-            if not self.camera_help_shown:
-                self.camera_help_shown = True
-                self.root.after_idle(self.show_camera_help)
+        return None
+
+    def request_camera_search(self):
+        if not self.running:
             return
+        if self.recording:
+            self.stop_recording()
+        self.current_frame = None
+        self.camera_help_shown = False
+        self.set_camera_state(
+            "searching",
+            "カメラを再検索しています...",
+            clear_frame=True,
+        )
+        self.camera_rescan_event.set()
 
-        self.photo_button.configure(state="normal")
-        self.record_button.configure(state="normal")
-        self.status.set(f"カメラID {self.camera_index} に接続しました。")
-        self.after_id = self.root.after(0, self.update_frame)
-
-    def cancel_scheduled_update(self):
-        if self.after_id is None:
-            return
-        try:
-            self.root.after_cancel(self.after_id)
-        except tk.TclError:
-            pass
-        self.after_id = None
-
-    @staticmethod
-    def timestamp():
-        return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-
-    def update_frame(self):
+    def refresh_ui(self):
         self.after_id = None
         if not self.running:
             return
 
-        if self.cap is None or not self.cap.isOpened():
-            self.status.set("カメラが切断されました。再検索します...")
-            self.after_id = self.root.after(500, self.initialize_camera)
-            return
+        with self.frame_lock:
+            state = self.camera_state
+            message = self.camera_message
+            frame = None if self.latest_frame is None else self.latest_frame.copy()
 
-        ret, frame = self.cap.read()
-        if not ret:
+        if message != self.last_camera_message:
+            self.status.set(message)
+            self.last_camera_message = message
+
+        camera_ready = state == "ready" and frame is not None
+        button_state = "normal" if camera_ready else "disabled"
+        self.photo_button.configure(state=button_state)
+        self.record_button.configure(state=button_state)
+
+        if camera_ready:
+            self.current_frame = frame
+            if self.recording and self.writer is not None:
+                self.writer.write(frame)
+            self.show_frame(frame)
+        else:
+            self.current_frame = None
             if self.recording:
                 self.stop_recording()
-            self.read_failures += 1
-            if self.read_failures >= 10:
-                self.status.set("映像を取得できません。カメラを再検索します...")
-                self.after_id = self.root.after(500, self.initialize_camera)
-            else:
-                self.status.set("カメラ映像を取得できません。再試行中...")
-                self.after_id = self.root.after(100, self.update_frame)
-            return
+                self.status.set(message)
+            self.preview_label.configure(image="", text=message, wraplength=760)
+            self.preview_label.image = None
+            if state == "error" and not self.camera_help_shown:
+                self.camera_help_shown = True
+                self.root.after_idle(self.show_camera_help)
 
-        self.read_failures = 0
-        self.current_frame = frame
-        if self.recording and self.writer is not None:
-            self.writer.write(frame)
+        interval_ms = max(1, round(1000 / self.fps))
+        self.after_id = self.root.after(interval_ms, self.refresh_ui)
 
+    def show_frame(self, frame):
         preview = frame.copy()
         if self.recording:
             cv2.putText(
@@ -231,15 +313,13 @@ class CameraApp:
         photo = ImageTk.PhotoImage(image=image)
         self.preview_label.configure(image=photo, text="")
         self.preview_label.image = photo
-        if not self.recording:
-            self.status.set("プレビュー中")
-
-        interval_ms = max(1, round(1000 / self.fps))
-        self.after_id = self.root.after(interval_ms, self.update_frame)
 
     def show_camera_help(self):
-        if not self.running or self.current_frame is not None:
+        if not self.running:
             return
+        with self.frame_lock:
+            if self.camera_state != "error":
+                return
         messagebox.showwarning(
             "カメラ映像を取得できません",
             "カメラID 0〜4を試しましたが、映像を取得できませんでした。\n\n"
@@ -320,11 +400,18 @@ class CameraApp:
             return
 
         self.running = False
-        self.cancel_scheduled_update()
+        if self.after_id is not None:
+            try:
+                self.root.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
+            self.after_id = None
         if self.recording:
             self.stop_recording()
-        if self.cap is not None:
-            self.cap.release()
+        self.camera_stop_event.set()
+        self.camera_rescan_event.set()
+        if self.camera_thread is not None:
+            self.camera_thread.join(timeout=0.5)
         self.root.destroy()
 
 
