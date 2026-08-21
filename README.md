@@ -99,6 +99,8 @@ python camera_app.py
 
 写真は `camera_output/photos/photo_YYYYMMDD_HHMMSS_mmm.png`、動画は `camera_output/videos/video_YYYYMMDD_HHMMSS_mmm.mp4` 形式で保存されます。
 
+> macOS で映像が表示されない場合は、「システム設定 > プライバシーとセキュリティ > カメラ」で、実行に使っているターミナルまたは Python のカメラ利用を許可してください。設定変更後はアプリを再起動します。
+
 ### trim.py
 
 Tkinter ベースの GUI で、動画ファイルから任意のフレームを選び、範囲をトリミングして画像として保存します。切り出し画像は `output/` ディレクトリに保存されます。
