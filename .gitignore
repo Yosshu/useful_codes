@@ -3,3 +3,4 @@ __pycache__/
 # スクリプトの出力先
 uniform_output/
 output/
+camera_output/

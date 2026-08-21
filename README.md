@@ -7,8 +7,8 @@
 - Python 3.8+
 - opencv-python
 - numpy
-- Pillow（`trim.py` / `uniform_size.py` / `img_convert.py` で使用）
-- Tkinter（`trim.py` で使用。標準では同梱、Linux では別途 `python3-tk` の導入が必要な場合あり）
+- Pillow（`trim.py` / `camera_app.py` / `uniform_size.py` / `img_convert.py` で使用）
+- Tkinter（`trim.py` / `camera_app.py` で使用。標準では同梱、Linux では別途 `python3-tk` の導入が必要な場合あり）
 - NVIDIA ドライバ・`nvidia-smi`（`gpu_watch.py` で使用）
 
 ```bash
@@ -39,7 +39,7 @@ python get_imgpoints.py
 
 ### record_video.py
 
-指定した秒数だけカメラから動画を撮影して `.mp4` として保存します。
+カメラ映像をウィンドウで常時プレビューし、キー操作で録画を開始・停止して `.mp4` として保存します。
 
 **実行方法**
 
@@ -47,12 +47,20 @@ python get_imgpoints.py
 python record_video.py
 ```
 
+**操作**
+
+| キー | 動作 |
+| --- | --- |
+| `R` | 録画を開始。録画中にもう一度押すと停止して保存 |
+| `Esc` | 終了。録画中の場合は、その時点までを保存 |
+
+録画ファイルは、録画開始日時を含む `recorded_video_YYYYMMDD_HHMMSS_mmm.mp4` 形式で保存されます。
+
 **設定項目（`__main__` 内の変数を編集）**
 
-- `output_file` — 出力ファイル名（既定: `recorded_video.mp4`）
-- `recording_duration` — 撮影秒数（既定: 10 秒）
-- `recording_fps` — フレームレート（既定: 10 fps）
-- `recording_width` / `recording_height` — 解像度（既定: 1280×720）
+- `output_file` — 出力ファイル名のベース（既定: `recorded_video.mp4`。保存時に日時が自動挿入されます）
+- `recording_fps` — 録画フレームレート（既定: 10 fps）
+- `recording_width` / `recording_height` — プレビュー・録画解像度（既定: 1280×720）
 
 ### takingpics.py
 
@@ -70,6 +78,32 @@ python takingpics.py
 | --- | --- |
 | `A` | 現在のフレームを保存 |
 | `Esc` | 終了 |
+
+### camera_app.py
+
+Tkinter のウィンドウでカメラ映像を確認しながら、写真撮影と動画録画の両方を行えるアプリです。
+
+**実行方法**
+
+```bash
+python camera_app.py
+```
+
+**操作**
+
+| ボタン / キー | 動作 |
+| --- | --- |
+| 「写真撮影」 / `P` | 現在の映像を PNG 画像として保存 |
+| 「録画開始・停止」 / `R` | MP4 動画の録画を開始・停止 |
+| 「トリミング」 | ONにしてプレビューをドラッグすると、写真・動画の保存範囲を選択 |
+| 「カメラ再検索」 | カメラID `0`〜`4` を再検索し、映像を取得できるカメラへ接続 |
+| 「終了」 / `Esc` | アプリを終了。録画中の場合は、その時点までを保存 |
+
+写真は `camera_output/photos/photo_YYYYMMDD_HHMMSS_mmm.png`、動画は `camera_output/videos/video_YYYYMMDD_HHMMSS_mmm.mp4` 形式で保存されます。
+
+トリミングモードでは、選択範囲が黄色い枠で表示されます。範囲を選択するまで撮影・録画は開始できません。録画開始後は、動画のフレームサイズを一定に保つため、録画終了まで選択範囲が固定されます。
+
+> 起動時は既定のOpenCVバックエンドを使い、カメラID `0`〜`4` のうち実際に映像を取得できるものへ自動接続します。映像が表示されない場合は「カメラ再検索」を押してください。macOSでは「システム設定 > プライバシーとセキュリティ > カメラ」の権限も確認してください。
 
 ### trim.py
 
